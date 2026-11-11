@@ -719,7 +719,7 @@ function peopleSVG(C, poured) {
   const groups = C.x
     ? [["XᴬXᴬ ♀", C.nFAA, "F", "AA"], ["XᴬXᵃ ♀", C.nFAa, "F", "Aa"], ["XᵃXᵃ ♀", C.nFaa, "F", "aa"], ["XᴬY ♂", C.nMA, "M", "A"], ["XᵃY ♂", C.nMa, "M", "a"]]
     : [["AA", C.nAA, "", "AA"], ["Aa", C.nAa, "", "Aa"], ["aa", C.naa, "", "aa"]];
-  const per = 12, cw = 30, ch = 52, left = 70, W = left + per * cw + 10;
+  const per = 12, cw = 30, ch = 52, left = 96, W = left + per * cw + 10;
   let y = 6; const rows = [];
   for (const g of groups) { if (!g[1]) continue; const nr = Math.ceil(g[1] / per); rows.push([g, y]); y += nr * ch + 8; }
   const jarTop = y + 18, T = CORE.totalCopies(C), AC = CORE.aCopies(C);
