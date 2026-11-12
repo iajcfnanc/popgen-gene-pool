@@ -216,23 +216,55 @@ function rtools(R) {
     binom: (n, p) => { let k = 0; for (let i = 0; i < n; i++) if (R() < p) k++; return k; },
   };
 }
-/* Accepts 0.25, .25, 25%, 1/16, 1.4e-5, 1.4x10^-5, 1.4×10-5, 1 in 40. */
+/* Accepts 0.25, .25, 25%, 1/16, 1.4e-5, 1.4x10^-5, 1.4×10-5, 1.4×10⁻⁵, 1 in 40,
+   and arithmetic: 0.563^2, 0.563², 2*0.563*0.438, 2×0.4×0.6, 1-0.3, (0.2+0.1)/2, 2(0.3)(0.7).
+   Letters other than the x for "times" make it NaN. */
+const SUPS = "⁰¹²³⁴⁵⁶⁷⁸⁹";
 function parseNum(s) {
   if (s == null) return NaN;
-  let t = String(s).trim().toLowerCase().replace(/\s+/g, "").replace(/,/g, "").replace(/[−–]/g, "-").replace(/⁻/g, "-")
-    .replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹]/g, (c) => "⁰¹²³⁴⁵⁶⁷⁸⁹".indexOf(c));
+  let t = String(s).trim().toLowerCase().replace(/\s+/g, "").replace(/,/g, "").replace(/[−–]/g, "-")
+    .replace(/[⁻⁺]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g, (r) => "^(" + r.replace("⁻", "-").replace("⁺", "").replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹]/g, (c) => SUPS.indexOf(c)) + ")");
   if (!t) return NaN;
   let m = t.match(/^1in(\d*\.?\d+)$/);
   if (m) return 1 / parseFloat(m[1]);
   let pct = false;
   if (t.endsWith("%")) { pct = true; t = t.slice(0, -1); }
   let v;
-  if ((m = t.match(/^([-+]?\d*\.?\d+)[x×*]10\^?([-+]?\d+)$/))) v = parseFloat(m[1]) * Math.pow(10, parseInt(m[2], 10));
+  if ((m = t.match(/^([-+]?\d*\.?\d+)[x×*]10\^?\(?([-+]?\d+)\)?$/))) v = parseFloat(m[1]) * Math.pow(10, parseInt(m[2], 10));
   else if ((m = t.match(/^([-+]?\d*\.?\d+)\/(\d*\.?\d+)$/))) v = parseFloat(m[1]) / parseFloat(m[2]);
   else if (/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/.test(t)) v = parseFloat(t);
-  else return NaN;
+  else v = calc(t);
   return pct ? v / 100 : v;
 }
+/* A small arithmetic reader (no eval): + - * x × · / ^ and brackets; 2(0.3) multiplies. */
+function calc(t) {
+  const toks = t.match(/\d+\.?\d*(?:e[-+]?\d+)?|\.\d+(?:e[-+]?\d+)?|[-+*x×·/^()]/g);
+  if (!toks || toks.join("") !== t) return NaN;
+  let i = 0;
+  const peek = () => toks[i], take = () => toks[i++];
+  function expr() { let v = term(); while (peek() === "+" || peek() === "-") v = take() === "+" ? v + term() : v - term(); return v; }
+  function term() {
+    let v = unary();
+    for (;;) {
+      const o = peek();
+      if (o === "*" || o === "x" || o === "×" || o === "·") { take(); v *= unary(); }
+      else if (o === "/") { take(); v /= unary(); }
+      else if (o === "(") v *= unary();
+      else return v;
+    }
+  }
+  function unary() { if (peek() === "-") { take(); return -unary(); } if (peek() === "+") { take(); return unary(); } return power(); }
+  function power() { const b = atom(); if (peek() === "^") { take(); return Math.pow(b, unary()); } return b; }
+  function atom() {
+    const k = take();
+    if (k === "(") { const v = expr(); if (take() !== ")") throw 0; return v; }
+    if (k != null && /^[\d.]/.test(k)) return parseFloat(k);
+    throw 0;
+  }
+  try { const v = expr(); return i === toks.length && isFinite(v) ? v : NaN; } catch (e) { return NaN; }
+}
+/* True when an answer box holds letters (p, q, A, a …) rather than numbers. */
+function hasLetters(s) { return /[a-df-wyzᴬᵃ]/i.test(String(s == null ? "" : s)); }
 function near(v, target, tol) {
   if (typeof v !== "number" || !isFinite(v)) return false;
   const d = Math.abs(v - target);
@@ -290,8 +322,9 @@ function choice({ legend, options, value, onChange, disabled, marks, thumbs, nam
   }
   return fs;
 }
-function number({ label, value, onInput, hint, disabled, mark, placeholder, aria }) {
-  const inp = el("input", { type: "text", inputmode: "decimal", autocomplete: "off", spellcheck: "false", placeholder: placeholder || "", "aria-label": aria || null });
+function number({ label, value, onInput, hint, disabled, mark, placeholder, aria, calc }) {
+  // calc: true gives phones a full keyboard so ^ * ( ) can be typed
+  const inp = el("input", { type: "text", inputmode: calc ? "text" : "decimal", autocomplete: "off", autocapitalize: "off", spellcheck: "false", placeholder: placeholder || "", "aria-label": aria || null });
   inp.value = value == null ? "" : value; inp.disabled = !!disabled;
   inp.addEventListener("input", () => onInput(inp.value));
   return el("label", { class: "num " + (mark || "") }, el("span", { class: "lab" }, label), inp, hint ? el("span", { class: "hint" }, hint) : null);
@@ -528,14 +561,26 @@ function run(core, ui) {
   load(newSeed());
 }
 
-root.Kit = { genTicks, rng, rtools, parseNum, near, fmt, sig, sup, frac, el, s, clear, svg, choice, number, range, legend, axes, path, run, resultCode, checksum, NS };
+root.Kit = { genTicks, rng, rtools, parseNum, hasLetters, near, fmt, sig, sup, frac, el, s, clear, svg, choice, number, range, legend, axes, path, run, resultCode, checksum, NS };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
 <!-- Designed by Tegan Williams for BISC 202 at SFU. Please retain this attribution in copies. -->
 <style>
-.people .body { fill: var(--slot); stroke: var(--muted); stroke-width: 1; }
-.people .head { fill: var(--slot); stroke: var(--muted); stroke-width: 1; }
+:root { --ic1:#e3eaee; --ic2:#b4c3cb; --icl:#4a5d67; --ick:#22323a; --icw:#f9fbfc; }
+@media (prefers-color-scheme:dark) { :root:not([data-theme="light"]) { --ic1:#3a4a53; --ic2:#5a6e79; --icl:#b9c7ce; --ick:#0c1317; --icw:#dfe7eb; } }
+:root[data-theme="dark"] { --ic1:#3a4a53; --ic2:#5a6e79; --icl:#b9c7ce; --ick:#0c1317; --icw:#dfe7eb; }
+.ic .b { fill: var(--ic1); stroke: var(--icl); stroke-width: .8; }
+.ic .s { fill: var(--ic2); stroke: var(--icl); stroke-width: .8; }
+.ic .k { fill: var(--ick); stroke: var(--icl); stroke-width: .3; }
+.ic .w { fill: var(--icw); }
+.ic .l { fill: none; stroke: var(--icl); stroke-linecap: round; stroke-linejoin: round; }
+.ic .dot { fill: var(--ic2); }
+.ic .dotk { fill: var(--ick); opacity: .75; }
+.ic .wing { fill: var(--icw); fill-opacity: .6; stroke: var(--icl); stroke-width: .6; }
+.ic .eye.red { fill: #c8321f; stroke: #7a1a0e; stroke-width: .4; }
+.ic .eye.white { fill: #fdfcf6; stroke: var(--icl); stroke-width: .6; }
+.ic .shine { fill: #fff; opacity: .55; }
 .people .bead { stroke: var(--surface); stroke-width: 1.5; transition: transform 1.3s cubic-bezier(.5,0,.3,1), opacity .4s; }
 .people .bead.A { fill: var(--gAA); } .people .bead.a { fill: var(--gaa); }
 .people .fig { transition: opacity .8s; }
@@ -543,9 +588,23 @@ root.Kit = { genTicks, rng, rtools, parseNum, near, fmt, sig, sup, frac, el, s, 
 .people .jar { fill: none; stroke: var(--ink); stroke-width: 1.5; }
 .people .grp { font-size: 12px; fill: var(--ink); font-weight: 600; }
 .pool .A { fill: var(--gAA); } .pool .a { fill: var(--gaa); }
-.pair { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
-.pair .pun { flex: 0 1 270px; min-width: 0; } .pair .pch { flex: 1 1 300px; min-width: 0; }
-.punnett text { fill: var(--surface); font-weight: 600; font-size: 13px; }
+.pair { display: flex; flex-wrap: wrap; gap: 16px 20px; align-items: flex-start; }
+.pair figure { margin: 0; display: grid; gap: 6px; min-width: 0; }
+.pair .pun { flex: 0 1 300px; } .pair .pch { flex: 1 1 360px; }
+.punnett text.cell { fill: var(--dna-ink); font-weight: 600; font-size: 13px; }
+.punnett text.cell.v { font-weight: 500; font-size: 12px; }
+.punnett text.ax { fill: var(--ink); font-weight: 700; font-size: 14px; }
+.hweq { display: grid; gap: 8px; justify-items: center; text-align: center; padding: 12px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--slot); }
+.hweq .eq { font-size: clamp(1.5rem, 5vw, 2.1rem); font-weight: 700; color: var(--ink); letter-spacing: .02em; }
+.hweq .terms { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 22px; font-size: .9rem; color: var(--ink); }
+.hweq .term { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.hweq .term i { width: 12px; height: 12px; border-radius: 2px; background: var(--gAA); }
+.hweq .term i.gAa { background: var(--gAa); } .hweq .term i.gaa { background: var(--gaa); }
+.simgrid { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.simcol { flex: 1 1 280px; min-width: 0; max-width: 598px; display: grid; gap: 4px; }
+.simtop { display: flex; justify-content: center; padding: 0 1.9% 0 8.8%; } /* centred over the plot area of the 520-wide chart */
+.simgrid .legend { flex-direction: column; flex-wrap: nowrap; gap: 6px; flex: 0 0 auto; }
+@media (max-width: 520px) { .hweq .term { white-space: normal; } .simgrid .legend { flex-direction: row; flex-wrap: wrap; gap: 4px 14px; } }
 </style>
 <script>
 /* CORE START */
@@ -557,6 +616,11 @@ const LEARN_COUNT = "Week 13 Tuesday lecture, Populations and gene pools (slides
 const LEARN_X = "Week 13 Tuesday lecture, Practice: alleles on the X (slides 8–9) · Klug §26.3, Calculating Allele Frequencies for X-linked Traits (p. 628)";
 const LEARN_HW = "Week 13 Tuesday lecture, Hardy–Weinberg: From allele to genotype frequencies (slides 11–13) · Klug §26.2, The Hardy–Weinberg Law and Its Assumptions (p. 624)";
 const pFrom = (nAA, nAa, naa) => (2 * nAA + nAa) / (2 * (nAA + nAa + naa));
+/* Answer boxes holding letters (p^2, 2pq, A^2, 2Aa) rather than numbers: ask for numbers. Not counted as a try. */
+function letters(A, keys) {
+  const ks = keys.filter((k) => K.hasLetters(A[k]) && !isFinite(K.parseNum(A[k])));
+  return ks.map((k, i) => ({ tag: "INC", field: k, note: i ? "" : "Write the numbers instead of the letters: for example, if p were 0.4 you would type 0.4^2, not p^2 or A^2." }));
+}
 
 function make(seed) {
   const R = K.rng(seed), T = K.rtools(R);
@@ -605,6 +669,7 @@ const steps = [
   { name: "Count copies",
     bits: { PEOPLE: 1, HOMTWO: 2, COUNT: 4, PFREQ: 8, CALC: 16, XTWO: 32 },
     judge(C, A) {
+      const lt = letters(A, ["tot", "ac", "p"]); if (lt.length) return lt;
       const tot = K.parseNum(A.tot), ac = K.parseNum(A.ac), p = K.parseNum(A.p), fs = [];
       if (!isFinite(tot)) fs.push({ tag: "INC", field: "tot", note: "Enter the total number of allele copies." });
       if (!isFinite(ac)) fs.push({ tag: "INC", field: "ac", note: "Enter the number of A copies." });
@@ -634,6 +699,7 @@ const steps = [
   { name: "Random mating",
     bits: { HWCALC: 1, SAME: 2, MENDEL: 4, SUM: 8, TWOPQ: 16, XSQ: 32, XWOMEN: 64 },
     judge(C, A) {
+      const lt = letters(A, C.x ? ["men", "women"] : ["AA", "Aa", "aa"]); if (lt.length) return lt;
       const fs = [];
       if (C.x) {
         const m = K.parseNum(A.men), w = K.parseNum(A.women);
@@ -683,11 +749,11 @@ const cards = {
   PFREQ: { title: "p is not the frequency of AA individuals", text: "Heterozygotes carry A copies too. p = (2 × AA + Aa) / 2N, or equivalently p = freq(AA) + ½ freq(Aa).", learn: LEARN_COUNT + " (slide 6, CCR5)" },
   CALC: { title: "Check the division", text: "", learn: LEARN_COUNT },
   XTWO: { title: "Males carry one X", text: "For an X-linked gene each female carries two copies and each male one. Total copies = 2 × females + males.", learn: LEARN_X },
-  HWCALC: { title: "Use p², 2pq and q²", text: "Under random mating, an offspring's two gametes are drawn independently from the gene pool: AA = p × p, Aa = 2pq (A from either parent), aa = q × q.", learn: LEARN_HW },
+  HWCALC: { title: "Use p², 2pq and q²", text: "Under random mating, each offspring's two alleles (one from each parent) are independent draws from the population's allele frequencies: AA = p × p, Aa = 2pq (A from either parent), aa = q × q.", learn: LEARN_HW },
   SAME: { title: "Random mating resets the genotype frequencies", text: "These are the parents' genotype frequencies. The offspring's genotypes depend only on the allele frequencies in the gene pool, so they are p², 2pq, q² whatever the parents' genotypes were.", learn: LEARN_HW },
   MENDEL: { title: "1 : 2 : 1 is one cross, not a population", text: "1/4 : 1/2 : 1/4 is what Aa × Aa gives. A population mating at random gives p², 2pq, q², which is 1 : 2 : 1 only when p = q = 0.5.", learn: LEARN_HW },
   SUM: { title: "The three frequencies must add to 1", text: "p² + 2pq + q² = (p + q)² = 1.", learn: LEARN_HW },
-  TWOPQ: { title: "Heterozygotes are 2pq, not pq", text: "An Aa offspring can get A from the egg and a from the sperm, or the other way round: pq + qp = 2pq.", learn: LEARN_HW },
+  TWOPQ: { title: "Heterozygotes are 2pq, not pq", text: "An Aa offspring can get A from its mother and a from its father, or the other way round: pq + qp = 2pq.", learn: LEARN_HW },
   XSQ: { title: "A male's phenotype shows his one allele", text: "A male has one X, so the fraction of males showing an X-linked recessive trait is q itself, not q².", learn: LEARN_X },
   XWOMEN: { title: "Females need two recessive copies", text: "A female shows an X-linked recessive trait only as XᵃXᵃ: frequency q². Heterozygous females (2pq) are carriers.", learn: LEARN_X },
   MC85: { title: "Dominance does not set frequency", text: "Dominance describes how a heterozygote looks, not how alleles are passed on. With no force acting, allele frequencies do not change at all: that is the Hardy–Weinberg null model.", learn: "Week 13 Tuesday lecture, Dominance does not set frequency (slide 7) · Klug §26.2 (p. 624)" },
@@ -713,33 +779,117 @@ return { id: "popgen_gene_pool", prefix: "P", make, steps, cards, anchors, Q3, h
 (() => {
 const K = Kit, { el, s } = K;
 const GT = ["AA", "Aa", "aa"];
+/* Species icons (stage 1), 32 × 30 box, top-left origin. Classes: b body, s shade, k dark, w light, l line, wing, eye. */
+const ICONS = (() => {
+  const P = (d, c, x) => ["path", Object.assign({ d, class: c }, x || {})];
+  const C = (cx, cy, r, c) => ["circle", { cx, cy, r, class: c }];
+  const E = (cx, cy, rx, ry, c, rot) => ["ellipse", Object.assign({ cx, cy, rx, ry, class: c }, rot ? { transform: `rotate(${rot} ${cx} ${cy})` } : {})];
+  const L = (d, w) => ["path", { d, class: "l", "stroke-width": w || 1.1 }];
+  const snail = () => [
+    P("M2.5 27.5 C1.6 25.5 2.6 23.4 4.6 22.2 C5.8 21.4 6.4 19.8 7.1 18.4 C8 16.8 10.2 17.2 10.3 19.2 L10.6 22.4 L26.5 22.4 C29.8 22.4 31.2 24.6 30.6 26.4 C30.2 27.6 29.2 28 27.8 28 L4.2 28 C3.4 28 2.8 27.9 2.5 27.5 Z", "b"),
+    L("M7.4 18.6 L4.6 11.6", 1.2), L("M9.2 17.9 L9.4 10.6", 1.2), C(4.4, 11.2, 1.3, "k"), C(9.4, 10.2, 1.3, "k"),
+    L("M5 26.2 L28 26.2", 0.6),
+    C(20.2, 14, 9, "s"),
+    P("M19.6 14.0 L19.5 13.8 L19.5 13.6 L19.5 13.3 L19.6 13.1 L19.8 12.8 L20.1 12.6 L20.5 12.5 L20.9 12.5 L21.3 12.7 L21.7 12.9 L22.1 13.3 L22.3 13.7 L22.4 14.3 L22.4 14.9 L22.2 15.5 L21.9 16.0 L21.4 16.5 L20.7 16.8 L20.0 17.0 L19.2 17.0 L18.5 16.8 L17.7 16.3 L17.1 15.7 L16.7 14.9 L16.4 14.0 L16.4 13.0 L16.7 12.1 L17.2 11.2 L17.9 10.4 L18.8 9.8 L19.9 9.5 L21.1 9.4 L22.2 9.7 L23.3 10.2 L24.3 11.0 L25.0 12.1 L25.4 13.3 L25.6 14.7 L25.4 16.0 L24.8 17.3 L23.9 18.5 L22.7 19.4 L21.3 19.9 L19.8 20.2 L18.3 20.0 L16.8 19.4 L15.4 18.5 L14.3 17.2 L13.6 15.7 L13.3 14.0 L13.4 12.2 L13.9 10.5 L14.9 9.0 L16.2 7.7 L17.9 6.8 L19.7 6.3 L21.7 6.3 L23.6 6.8 L25.3 7.8 L26.8 9.2", "l", { "stroke-width": 1.1 }),
+    P("M14.2 20.6 Q16.6 22.4 20.2 22.6", "l", { "stroke-width": 0.6 }),
+  ];
+  const mouse = () => [
+    P("M25.6 21.6 C29.6 21.8 31.4 19 30.8 15.6 C30.4 13.4 31.2 11.6 31.6 10.6", "l", { fill: "none", "stroke-width": 1.3 }),
+    P("M8.6 14.2 C11.4 11.6 16.6 10.8 21 12.2 C25.4 13.6 27.6 17.4 26.4 21 C25.6 23.6 22.4 25.2 17.6 25.2 L11.2 25.2 C8.2 25.2 6.8 23.4 7 21.2 Z", "s"),
+    P("M9.4 22.6 C12 24.6 18.6 25.2 23.4 23.6 C25.4 22.9 26.3 21.8 26.6 20.6 C24.4 22.2 20.6 22.8 16.6 22.6 C13.4 22.4 11 22 9.4 22.6 Z", "w"),
+    P("M2.2 18.8 C3 15.4 6 13 9.2 13 C11.6 13 13.2 14.6 13.2 17 C13.2 19.8 11 21.4 8.2 21.4 C5.6 21.4 3.4 20.6 2.2 18.8 Z", "s"),
+    P("M3 19.4 C5 21 8.6 21.6 11.4 20.4 C9.6 21.8 5.8 21.8 3 19.4 Z", "w"),
+    C(10.6, 11, 3.6, "s"), C(10.6, 11.2, 2.1, "w"),
+    C(6.4, 16.4, 1.35, "k"), C(6.8, 16, 0.4, "w"), C(2.4, 18.6, 0.9, "k"),
+    L("M3.2 19 L0.4 18.2 M3.2 19.4 L0.6 20.6", 0.5),
+    E(12.4, 25.4, 2.1, 1, "s"), E(21.4, 25.4, 2.1, 1, "s"),
+  ];
+  const sunflower = () => {
+    const out = [L("M16 30 L16 18", 1.6),
+      P("M16 26 C12.6 22.4 8.4 22.6 7.2 24.8 C10 26.8 13.4 27.2 16 26 Z", "b"), P("M16 23.4 C19.4 19.8 23.6 20 24.8 22.2 C22 24.2 18.6 24.6 16 23.4 Z", "b"),
+      L("M16 26 L10 24.6 M16 23.4 L22 22", 0.5)];
+    for (let i = 0; i < 14; i++) { const a = i * 360 / 14, r = a * Math.PI / 180; out.push(E(16 + 7 * Math.sin(r), 11 - 7 * Math.cos(r), 1.9, 4, "b", a)); }
+    out.push(C(16, 11, 5.2, "k"));
+    for (const [x, y] of [[14, 9.4], [16.4, 8.2], [18.2, 10], [17.6, 12.8], [15, 13.2], [13.4, 11.4], [16, 11]]) out.push(C(x, y, 0.55, "dot"));
+    return out;
+  };
+  const salamander = () => [
+    L("M10.6 14.6 L8.2 10.2 L6.6 9.6 M8.2 10.2 L7.6 8.6 M10.6 19.4 L8.4 23.6 L6.8 24.2 M8.4 23.6 L7.8 25.2", 1.5),
+    L("M19.6 14.4 L21.8 10.2 L23.4 9.6 M21.8 10.2 L22.2 8.6 M19.6 19.6 L21.8 23.8 L23.4 24.4 M21.8 23.8 L22.2 25.4", 1.5),
+    P("M2 17 C2 14 4.4 12.8 7 13.4 C9 13.9 11 14.4 15 14.4 C19.2 14.4 22.2 14.6 25 13.4 C27.4 12.4 29.4 10.4 31 8.6 C30.4 12.2 28.2 15.4 25.2 17.4 C22.2 19.4 19 19.8 15 19.8 C11 19.8 9 20 7 20.6 C4.4 21.2 2 20 2 17 Z", "s"),
+    C(4.6, 14.9, 1.05, "k"), C(4.6, 19.1, 1.05, "k"),
+    C(11.6, 17.1, 1.15, "dotk"), C(15.6, 16.2, 1.15, "dotk"), C(18.6, 17.9, 1.15, "dotk"), C(22.6, 16.4, 1.05, "dotk"), C(26.2, 14.2, 0.9, "dotk"),
+    L("M2.4 17 Q3.6 17.6 4.4 17", 0.6),
+  ];
+  const ladybird = () => [
+    L("M9 13 L4.4 10.6 M8 18 L3.2 18.4 M9 23.4 L4.6 26.6 M23 13 L27.6 10.6 M24 18 L28.8 18.4 M23 23.4 L27.4 26.6", 1.2),
+    L("M13.6 5.6 L11 2 M18.4 5.6 L21 2", 0.9), C(11, 2, 0.9, "k"), C(21, 2, 0.9, "k"),
+    E(16, 6.6, 3.8, 2.8, "k"),
+    E(16, 18.2, 10, 10.6, "s"),
+    P("M7.6 11.6 C9.6 8.6 12.6 7.8 16 7.8 C19.4 7.8 22.4 8.6 24.4 11.6 C21.6 12.6 10.4 12.6 7.6 11.6 Z", "k"),
+    C(11.6, 9.8, 1.1, "w"), C(20.4, 9.8, 1.1, "w"),
+    L("M16 12.2 L16 28.8", 1.1),
+    C(11.2, 16.6, 2, "k"), C(20.8, 16.6, 2, "k"), C(10.6, 23, 1.7, "k"), C(21.4, 23, 1.7, "k"), C(13.4, 27, 1.1, "k"), C(18.6, 27, 1.1, "k"),
+    E(12.6, 14.2, 1.6, 0.8, "shine", -30),
+  ];
+  const guppy = () => [
+    P("M19.6 16 C22.6 10.4 26.6 6.4 30.4 6.6 C31.8 9.8 32 13 31.6 16 C32 19 31.8 22.2 30.4 25.4 C26.6 25.6 22.6 21.6 19.6 16 Z", "s"),
+    L("M20.4 16 L29.4 8.4 M20.4 16 L30.8 12.2 M20.4 16 L31 16 M20.4 16 L30.8 19.8 M20.4 16 L29.4 23.6", 0.5),
+    C(26.6, 12.6, 0.9, "dotk"), C(28.4, 18.4, 1, "dotk"), C(25.4, 20.2, 0.7, "dotk"),
+    P("M9.6 11.6 C11 7.6 14.6 6.8 17.6 8.4 C17 10 16.4 11.4 16 12.4 C13.6 11.6 11.6 11.4 9.6 11.6 Z", "s"),
+    P("M1.6 16.2 C3 12.4 7.4 10.8 12.2 11.2 C15.8 11.6 18.6 13.2 20.6 16 C18.6 18.8 15.8 20.2 12.2 20.6 C7.4 21 3 19.8 1.6 16.2 Z", "b"),
+    P("M11.6 20.4 C12.6 22.6 14.6 23.6 16.4 23.4 C15.6 22 15.2 20.8 15 19.8 Z", "s"),
+    L("M8.6 12.4 C9.8 14.6 9.8 17.4 8.6 19.6", 0.7), L("M1.8 16.6 L4 16.4", 0.6),
+    C(5.4, 14.6, 1.6, "w"), C(5.2, 14.6, 0.85, "k"),
+  ];
+  const fly = (female, eye) => {
+    const ab = female
+      ? [E(16, 20.2, 5, 7.4, "s"),
+         P("M11.4 17.4 Q16 18.8 20.6 17.4 L20.8 18.8 Q16 20.2 11.2 18.8 Z", "k"),
+         P("M11.2 20.8 Q16 22.2 20.8 20.8 L20.5 22.2 Q16 23.6 11.5 22.2 Z", "k"),
+         P("M12 24 Q16 25.2 20 24 L19.2 25.4 Q16 26.4 12.8 25.4 Z", "k"),
+         P("M14.6 27.2 L16 28.8 L17.4 27.2 Z", "k")]
+      : [E(16, 18.6, 4.4, 5.8, "s"),
+         P("M11.8 16.6 Q16 17.9 20.2 16.6 L20.4 18 Q16 19.3 11.6 18 Z", "k"),
+         P("M11.7 19.4 Q16 20.7 20.3 19.4 C20.4 21.8 18.8 24.4 16 24.4 C13.2 24.4 11.6 21.8 11.7 19.4 Z", "k")];
+    return [
+      L("M13 10.4 L8.6 7.6 L7.4 4.6 M12.6 12.4 L7.4 12.8 L5.6 15.6 M13.2 14 L9.4 18.6 L9 22 M19 10.4 L23.4 7.6 L24.6 4.6 M19.4 12.4 L24.6 12.8 L26.4 15.6 M18.8 14 L22.6 18.6 L23 22", 0.8),
+      E(10.4, 20, 3.4, 9.4, "wing", 28), E(21.6, 20, 3.4, 9.4, "wing", -28),
+      L("M8 13.6 L13.4 25.6 M24 13.6 L18.6 25.6", 0.4),
+      ...ab,
+      E(16, 11.4, 4.4, 4, "s"), E(14.6, 10.4, 1.4, 0.8, "shine"),
+      E(16, 5.6, 3.8, 2.8, "s"),
+      E(12.9, 5.4, 2, 2.6, "eye " + eye, -12), E(19.1, 5.4, 2, 2.6, "eye " + eye, 12),
+      L("M15 3.2 L14 1 M17 3.2 L18 1", 0.6),
+    ];
+  };
+  const byOrg = { "snails": snail, "deer mice": mouse, "sunflowers": sunflower, "salamanders": salamander, "ladybird beetles": ladybird, "guppies": guppy };
+  return (org, sex, phen) => org === "fruit flies" ? fly(sex !== "M", phen === "a" || phen === "aa" ? "white" : "red") : (byOrg[org] || mouse)();
+})();
 
 function peopleSVG(C, poured) {
   // Groups of figures, one row group per genotype class, beads below each figure.
   const groups = C.x
     ? [["XᴬXᴬ ♀", C.nFAA, "F", "AA"], ["XᴬXᵃ ♀", C.nFAa, "F", "Aa"], ["XᵃXᵃ ♀", C.nFaa, "F", "aa"], ["XᴬY ♂", C.nMA, "M", "A"], ["XᵃY ♂", C.nMa, "M", "a"]]
     : [["AA", C.nAA, "", "AA"], ["Aa", C.nAa, "", "Aa"], ["aa", C.naa, "", "aa"]];
-  const per = 12, cw = 30, ch = 52, left = 96, W = left + per * cw + 10;
+  const per = window.innerWidth < 600 ? 8 : 12, cw = 34, ch = 58, left = 96, W = left + per * cw + 10;
   let y = 6; const rows = [];
   for (const g of groups) { if (!g[1]) continue; const nr = Math.ceil(g[1] / per); rows.push([g, y]); y += nr * ch + 8; }
   const jarTop = y + 18, T = CORE.totalCopies(C), AC = CORE.aCopies(C);
   const perRow = Math.floor(((W - left) / 2 - 14) / 10), jarRows = Math.ceil(Math.max(AC, T - AC) / perRow);
   const H = jarTop + 30 + jarRows * 11 + 30;
-  const svg = K.svg(W, H, "Each individual drawn with its allele copies as beads. Blue beads are A, orange beads are a.", "people" + (poured ? " poured" : ""));
+  const svg = K.svg(W, H, `Each of the ${C.N} ${C.org} drawn with its allele copies as beads below it. Blue beads are A, orange beads are a.`, "people" + (poured ? " poured" : ""));
   const beads = [];
   for (const [g, gy] of rows) {
     svg.append(s("text", { x: 0, y: gy + 26, class: "grp" }, g[0]), s("text", { x: 0, y: gy + 41 }, g[1] + (g[1] === 1 ? " individual" : " individuals")));
     for (let i = 0; i < g[1]; i++) {
       const cx = left + (i % per) * cw + cw / 2, top = gy + Math.floor(i / per) * ch;
-      const fig = s("g", { class: "fig" });
-      fig.append(s("circle", { class: "head", cx, cy: top + 7, r: 5 }));
-      if (g[2] === "M") fig.append(s("rect", { class: "body", x: cx - 6, y: top + 14, width: 12, height: 15, rx: 1 }));
-      else if (g[2] === "F") fig.append(s("path", { class: "body", d: `M${cx} ${top + 13} L${cx + 8} ${top + 29} L${cx - 8} ${top + 29} Z` }));
-      else fig.append(s("rect", { class: "body", x: cx - 6, y: top + 14, width: 12, height: 15, rx: 5 }));
+      const fig = s("g", { class: "fig ic", transform: `translate(${cx - 16} ${top})` });
+      for (const [t, a] of ICONS(C.org, g[2], g[3])) fig.append(s(t, a));
       svg.append(fig);
       const alle = g[3].split("");
       alle.forEach((a, k) => {
-        const bx = alle.length === 2 ? cx - 6 + k * 12 : cx, by = top + 38;
+        const bx = alle.length === 2 ? cx - 6 + k * 12 : cx, by = top + 40;
         const b = s("circle", { class: "bead " + a, cx: bx, cy: by, r: 5 });
         beads.push([b, a, bx, by]); svg.append(b);
       });
@@ -774,7 +924,7 @@ function bars(groups, label) {
       const x = gx + k * (bw + 4);
       svg.append(s("rect", { class: g.cls ? g.cls[k] : "c" + GT[k], x, y: sc.sy(v), width: bw, height: sc.sy(0) - sc.sy(v) }));
       if (g.hw) svg.append(s("rect", { class: "hwbox", x: x - 1, y: sc.sy(g.hw[k]), width: bw + 2, height: sc.sy(0) - sc.sy(g.hw[k]) }));
-      svg.append(s("text", { x: x + bw / 2, y: sc.sy(v) - 4, "text-anchor": "middle" }, v.toFixed(2)));
+      svg.append(s("text", { x: x + bw / 2, y: sc.sy(g.hw ? Math.max(v, g.hw[k]) : v) - 4, "text-anchor": "middle" }, v.toFixed(2)));
       svg.append(s("text", { x: x + bw / 2, y: y0 + h + 14, "text-anchor": "middle" }, g.labels ? g.labels[k] : GT[k]));
     });
     svg.append(s("text", { x: x0 + gi * gw + gw / 2, y: y0 + h + 32, "text-anchor": "middle", class: "lbl" }, g.name));
@@ -782,15 +932,26 @@ function bars(groups, label) {
   return svg;
 }
 
-function punnett(p) {
-  const S = 180, svg = K.svg(S + 60, S + 66, "Punnett square of the gene pool: areas p², pq, pq, q²", "punnett", 1.1);
-  const q = 1 - p, o = 40, a = S * p;
-  const cell = (x, y, w, h, cls, t) => { svg.append(s("rect", { class: cls, x, y, width: w, height: h, stroke: "var(--surface)" })); if (w > 26 && h > 18) svg.append(s("text", { x: x + w / 2, y: y + h / 2 + 4, "text-anchor": "middle" }, t)); };
-  cell(o, o, a, a, "cAA", "p²"); cell(o + a, o, S - a, a, "cAa", "pq"); cell(o, o + a, a, S - a, "cAa", "pq"); cell(o + a, o + a, S - a, S - a, "caa", "q²");
-  const lab = (x, y, t, anchor) => svg.append(s("text", { x, y, "text-anchor": anchor || "middle", class: "lbl" }, t));
-  lab(o + a / 2, o - 8, "A  " + p.toFixed(2)); lab(o + a + (S - a) / 2, o - 8, "a  " + q.toFixed(2));
-  lab(o - 6, o + a / 2 + 4, "A", "end"); lab(o - 6, o + a + (S - a) / 2 + 4, "a", "end");
-  lab(o + S / 2, o + S + 18, "eggs (top) × sperm (side)"); lab(o + S / 2, o + S + 34, "from one gene pool");
+/* p and q as the student sees them (3 decimal places), and the HW terms worked from those. */
+function shown(C) {
+  const p = +C.p.toFixed(3), q = +C.q.toFixed(3);
+  return { p, q, ps: C.p.toFixed(3), qs: C.q.toFixed(3), AA: p * p, Aa: 2 * p * q, aa: q * q, pq: p * q };
+}
+
+function punnett(C) {
+  const V = shown(C), S = 200, o = 92, top = 46, W = o + S + 24, H = top + S + 6;
+  const svg = K.svg(W, H, `Punnett square for the population: A (p = ${V.ps}) and a (q = ${V.qs}) on both sides; cell areas p², pq, pq, q²`, "punnett", 1.1);
+  const a = S * C.p;
+  const cell = (x, y, w, h, cls, t, v) => {
+    svg.append(s("rect", { class: cls, x, y, width: w, height: h, stroke: "var(--surface)", "stroke-width": 2 }));
+    if (w >= 40 && h >= 34) svg.append(s("text", { x: x + w / 2, y: y + h / 2 - 3, "text-anchor": "middle", class: "cell" }, t), s("text", { x: x + w / 2, y: y + h / 2 + 13, "text-anchor": "middle", class: "cell v" }, v.toFixed(3)));
+    else if (w >= 24 && h >= 16) svg.append(s("text", { x: x + w / 2, y: y + h / 2 + 4, "text-anchor": "middle", class: "cell" }, t));
+  };
+  cell(o, top, a, a, "cAA", "p²", V.AA); cell(o + a, top, S - a, a, "cAa", "pq", V.pq);
+  cell(o, top + a, a, S - a, "cAa", "pq", V.pq); cell(o + a, top + a, S - a, S - a, "caa", "q²", V.aa);
+  const two = (x, y, anchor, al, pr) => svg.append(s("text", { x, y, "text-anchor": anchor, class: "ax" }, al), s("text", { x, y: y + 15, "text-anchor": anchor, class: "lbl" }, pr));
+  two(o + a / 2, top - 24, "middle", "A", `(p = ${V.ps})`); two(o + a + (S - a) / 2, top - 24, "middle", "a", `(q = ${V.qs})`);
+  two(o - 8, top + a / 2 - 3, "end", "A", `(p = ${V.ps})`); two(o - 8, top + a + (S - a) / 2 - 3, "end", "a", `(q = ${V.qs})`);
   return svg;
 }
 
@@ -798,6 +959,12 @@ function simOffspring(C, n, seed) {
   const R = K.rng(seed); const c = [0, 0, 0];
   for (let i = 0; i < n; i++) { const a = R() < C.p, b = R() < C.p; c[a && b ? 0 : !a && !b ? 2 : 1]++; }
   return c.map((v) => v / n);
+}
+const SIZES = [20, 200, 2000];
+function offspringChart(C, seed) {
+  const hwv = CORE.hw(C.p);
+  return bars(SIZES.map((n, k) => ({ name: n + " offspring", vals: simOffspring(C, n, seed * 7 + k * 1000003), hw: hwv })),
+    "Genotype frequencies in random samples of 20, 200 and 2000 offspring, with the expected p², 2pq, q² as dashed outlines");
 }
 
 function generationsChart(C) {
@@ -838,7 +1005,7 @@ const UI = {
       },
       win: (C) => `${CORE.aCopies(C)} of ${CORE.totalCopies(C)} copies are A, so p = ${C.p.toFixed(3)} and q = ${C.q.toFixed(3)}. Every copy now sits in one gene pool: who carried it no longer matters.`,
       winTitle: () => "Right: counted in copies" },
-    { task: (C) => C.x ? "Suppose the population is at Hardy–Weinberg equilibrium with this q. What fraction of males, and of females, would have white eyes?" : "Every individual puts gametes into one gene pool and offspring form by random union of gametes. Predict the offspring's genotype frequencies.",
+    { task: (C) => C.x ? "Suppose the population is at Hardy–Weinberg equilibrium with this q. What fraction of males, and of females, would have white eyes?" : "Suppose this population mates at random. Each offspring inherits one allele from its mother and one from its father. Predict the genotype frequencies among the offspring.",
       render(root, C, A, ctx) {
         const pan = el("div", { class: "panel" });
         const W = 380, svg = K.svg(W, 56, `Gene pool: ${C.p.toFixed(2)} A, ${C.q.toFixed(2)} a`, "pool", 1.5);
@@ -849,8 +1016,8 @@ const UI = {
         if (!C.x) pan.append(el("p", { class: "note" }, `The parents were ${C.nAA} AA, ${C.nAa} Aa and ${C.naa} aa: frequencies ${(C.nAA / C.N).toFixed(2)}, ${(C.nAa / C.N).toFixed(2)}, ${(C.naa / C.N).toFixed(2)}.`));
         const f = (k) => ({ value: A[k], disabled: ctx.solved, mark: ctx.flag(k), onInput: (v) => { A[k] = v; ctx.change(); } });
         pan.append(C.x
-          ? el("div", { class: "nums" }, K.number({ label: "Fraction of males with white eyes", hint: "3 decimal places", ...f("men") }), K.number({ label: "Fraction of females with white eyes", hint: "3 decimal places", ...f("women") }))
-          : el("div", { class: "nums" }, ...GT.map((g) => K.number({ label: "Offspring " + g, hint: "frequency, 3 decimal places", ...f(g) }))));
+          ? el("div", { class: "nums" }, K.number({ label: "Fraction of males with white eyes", hint: "a number, or a calculation (^ for powers)", calc: true, ...f("men") }), K.number({ label: "Fraction of females with white eyes", hint: "a number, or a calculation (^ for powers)", calc: true, ...f("women") }))
+          : el("div", { class: "nums" }, ...GT.map((g) => K.number({ label: "Offspring " + g, hint: "a number, or a calculation (^ for powers)", calc: true, ...f(g) }))));
         root.append(pan);
       },
       reveal(root, C, A, ctx) {
@@ -862,21 +1029,32 @@ const UI = {
             K.legend([["gaa", "white eyes (XᵃY, XᵃXᵃ)"], ["gAa", "carrier female"], ["gAA", "red eyes"]]),
             el("p", { class: "note" }, `Among males, ${(C.q * 100).toFixed(1)}% show the trait; among females only ${(C.q * C.q * 100).toFixed(1)}%. Carrier females (2pq) are ${(2 * C.p * C.q * 100).toFixed(1)}%.`));
         } else {
+          const V = shown(C);
           let simSeed = C.simSeed;
-          const chart = el("div");
-          const draw = () => { K.clear(chart); chart.append(bars([
-            { name: "Parents (the sample)", vals: [C.nAA / C.N, C.nAa / C.N, C.naa / C.N] },
-            { name: "200 offspring, random mating", vals: simOffspring(C, 200, simSeed), hw: CORE.hw(C.p) }], "Parents against offspring")); };
+          const chart = el("div", { class: "simchart" });
+          const draw = () => { K.clear(chart); chart.append(offspringChart(C, simSeed)); };
           draw();
-          const again = el("button", { class: "btn small" }, "Mate at random again");
+          const again = el("button", { class: "btn", type: "button" }, "Randomize again");
           again.addEventListener("click", () => { simSeed++; draw(); });
-          pan.append(el("h2", null, "One generation of random mating"), el("div", { class: "pair" }, el("div", { class: "pun" }, punnett(C.p)), el("div", { class: "pch" }, chart)),
-            K.legend([["gAA", "AA"], ["gAa", "Aa"], ["gaa", "aa"], ["var(--ink)", "p², 2pq, q² (expected)", "dash"]]),
-            el("div", { class: "row" }, again, el("span", { class: "note" }, "Each sample of 200 scatters around the dashed p², 2pq, q² outlines.")));
+          const term = (cls, g, sym, calc, v) => el("span", { class: "term" }, el("i", { class: cls }), el("b", null, g), " = " + sym + " = " + calc + " = ", el("b", null, v.toFixed(3)));
+          pan.append(el("h2", null, "One generation of random mating"),
+            el("div", { class: "hweq" },
+              el("div", { class: "eq", "aria-label": "p squared plus 2 p q plus q squared equals 1" }, "p² + 2pq + q² = 1"),
+              el("div", { class: "terms" },
+                term("gAA", "AA", "p²", V.ps + "²", V.AA),
+                term("gAa", "Aa", "2pq", "2 × " + V.ps + " × " + V.qs, V.Aa),
+                term("gaa", "aa", "q²", V.qs + "²", V.aa))),
+            el("div", { class: "pair" },
+              el("figure", { class: "pun" }, punnett(C), el("figcaption", { class: "note" }, "Each cell's area is the probability of that pair of alleles. Aa appears twice: pq + pq = 2pq = " + V.Aa.toFixed(3) + ".")),
+              el("figure", { class: "pch" },
+                el("div", { class: "simgrid" },
+                  el("div", { class: "simcol" }, el("div", { class: "simtop" }, again), chart),
+                  K.legend([["gAA", "AA"], ["gAa", "Aa"], ["gaa", "aa"], ["var(--ink)", "expected: p², 2pq, q²", "dash"]])),
+                el("figcaption", { class: "note" }, "Each group is a separate random sample of offspring. Small samples scatter widely around the dashed expected outlines; 2000 offspring sit almost on them."))));
         }
         root.append(pan);
       },
-      win: (C) => C.x ? `Males: q = ${C.q.toFixed(3)}. Females: q² = ${(C.q * C.q).toFixed(3)}. Recessive X-linked traits are far commoner in males.` : `p² = ${(C.p * C.p).toFixed(3)}, 2pq = ${(2 * C.p * C.q).toFixed(3)}, q² = ${(C.q * C.q).toFixed(3)}. The parents' genotypes did not matter: only the allele frequencies did.`,
+      win: (C) => C.x ? `Males: q = ${C.q.toFixed(3)}. Females: q² = ${(C.q * C.q).toFixed(3)}. Recessive X-linked traits are far commoner in males.` : `p² = ${shown(C).AA.toFixed(3)}, 2pq = ${shown(C).Aa.toFixed(3)}, q² = ${shown(C).aa.toFixed(3)}. The parents' genotypes did not matter: only the allele frequencies did.`,
       winTitle: (C) => C.x ? "Right: q in males, q² in females" : "Right: p², 2pq, q²" },
     { task: () => "Now look further ahead. Answer both questions.",
       render(root, C, A, ctx) {
